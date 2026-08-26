@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Big Bang Evolution: From Cells to Fantasy Beasts</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#000;overflow:hidden;font-family:-apple-system,system-ui,sans-serif;color:#fff}
+  canvas{display:block;width:100%;height:100%}
+  #ui{position:absolute;top:8px;left:8px;font-size:12px;line-height:1.35;text-shadow:0 1px 3px #000;pointer-events:none;background:rgba(0,0,0,0.4);padding:8px;border-radius:8px}
+  #buttons{position:absolute;bottom:18px;left:0;right:0;display:flex;justify-content:center;gap:12px}
+  button{background:rgba(255,255,255,0.13);border:1px solid rgba(255,255,255,0.25);color:#fff;font-size:14px;padding:10px 22px;border-radius:24px;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+  button:active{background:rgba(255,255,255,0.25)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui"><div id="stats">Loading…</div></div>
+<div id="buttons">
+  <button id="resetBtn">Reset</button>
+  <button id="pauseBtn">Pause</button>
+</div>
+<script>
+const canvas=document.getElementById('c'), ctx=canvas.getContext('2d');
+const statsEl=document.getElementById('stats');
+const resetBtn=document.getElementById('resetBtn'), pauseBtn=document.getElementById('pauseBtn');
+
+let W,H, creatures=[], foods=[], paused=false, maxGen=0, frame=0;
+let environment='space'; // 'space' -> 'landing' -> 'land'
+let planetY=-300, planetSize=0;
+
+// Evolution tuning
+const START=12, MAX=220, FOOD_RATE=10, MAX_FOOD=350;
+const START_E=90, DRAIN=0.11, REPRO=110, COST=55, FOOD_V=38;
+const MUT=0.7, STR=0.9; // high mutation for rapid diversification
+
+// Terrain (for fantasy land)
+let terrain=[];
+const TERRAIN_POINTS=40;
+
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  canvas.width=W*devicePixelRatio; canvas.height=H*devicePixelRatio;
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  buildTerrain();
+}
+window.addEventListener('resize',resize); resize();
+
+function buildTerrain(){
+  terrain=[];
+  for(let i=0;i<=TERRAIN_POINTS;i++){
+    terrain.push({
+      x:i/TERRAIN_POINTS*W,
+      y:H*0.75 + Math.sin(i*0.5)*40 + Math.random()*20
+    });
+  }
+}
+
+// ---------- GENETICS ----------
+// Genes encode: speed, metabolism, limbs, stretch, sense, toughness
+// plus fantasy traits: wings, horns, tails, spikes, pattern, glow
+function randomGenes(){
+  return [
+    0.8+Math.random()*3.5, // speed
+    0.5+Math.random()*1.5, // metabolism
+    Math.random()*9,       // limbs
+    0.5+Math.random()*2.5, // stretch
+    Math.random()*4,       // sense
+    0.4+Math.random()*2.5  // toughness
+  ];
+}
+function mutate(g){
+  const n=g.slice();
+  for(let i=0;i<6;i++) if(Math.random()<MUT) n[i]+=(Math.random()-0.5)*2*STR;
+  n[2]+=(n[0]-g[0])*0.2;
+  n[3]+=(n[2]-g[2])*0.15;
+  n[5]+=(n[1]-g[1])*0.25;
+  n[0]=Math.max(0.4,Math.min(6,n[0]));
+  n[1]=Math.max(0.3,Math.min(3,n[1]));
+  n[2]=Math.max(0,Math.min(12,n[2]));
+  n[3]=Math.max(0.4,Math.min(4,n[3]));
+  n[4]=Math.max(0.2,Math.min(5,n[4]));
+  n[5]=Math.max(0.3,Math.min(4,n[5]));
+  return n;
+}
+
+// ---------- CREATURE ----------
+class Creature {
+  constructor(x,y,genes,energy,gen=0,sex){
+    this.x=x??Math.random()*(W-50)+25;
+    this.y=y??Math.random()*(H-50)+25;
+    this.genes=genes?genes.slice():randomGenes();
+    this.energy=energy??START_E;
+    this.angle=Math.random()*Math.PI*2;
+    this.gen=gen;
+    this.sex=sex??(Math.random()<0.5?'M':'F');
+    this.cool=0;
+    // Fantasy trait genes (evolve over time)
+    this.traits={
+      wings:Math.random(),
+      horns:Math.random(),
+      tails:Math.random(),
+      spikes:Math.random(),
+      glow:Math.random(),
+      pattern:Math.random()
+    };
+    this.updateLook();
+  }
+  updateLook(){
+    const g=this.genes;
+    this.sp=g[0]; this.meta=g[1];
+    this.limbs=Math.round(g[2]);
+    this.stretch=g[3]; this.sense=g[4]; this.tough=g[5];
+    this.bw=3.5 + this.sp*1.6 + this.tough*1.2;
+    this.bh=this.bw*this.stretch;
+    this.ll=3 + this.limbs*1.8;
+    // Color based on genes + sex + traits
+    this.r=Math.min(255,30+this.sp*45+(this.sex==='M'?35:0)+(this.traits.glow*60));
+    this.g=Math.min(255,25+this.tough*60+(this.traits.pattern*40));
+    this.b=Math.min(255,80+this.meta*55+(this.sex==='F'?40:0)+(this.traits.glow*50));
+  }
+  update(){
+    // Movement (floaty in space, more grounded on land)
+    const gravity = environment==='land' ? 0.4 : 0.1;
+    this.angle+=(Math.random()-0.5)*0.6;
+    this.x+=Math.cos(this.angle)*this.sp + (Math.random()-0.5)*gravity;
+    this.y+=Math.sin(this.angle)*this.sp + (Math.random()-0.5)*gravity;
+    // On land, keep creatures above terrain
+    if(environment==='land'){
+      const groundY=terrainHeight(this.x);
+      if(this.y>groundY-this.bh) this.y=groundY-this.bh;
+    }
+    // Bounds
+    if(this.x<12){this.angle=Math.PI-this.angle;this.x=12;}
+    if(this.x>W-12){this.angle=Math.PI-this.angle;this.x=W-12;}
+    if(this.y<12){this.angle=-this.angle;this.y=12;}
+    if(this.y>H-12){this.angle=-this.angle;this.y=H-12;}
+
+    // Energy
+    this.energy-=DRAIN*this.meta*(0.6+this.sp*0.25);
+
+    // Eat
+    for(let i=foods.length-1;i>=0;i--){
+      const f=foods[i];
+      if((this.x-f.x)**2+(this.y-f.y)**2<(this.bw+7)**2){
+        this.energy+=FOOD_V; foods.splice(i,1); break;
+      }
+    }
+    return this.energy>0;
+  }
+  canMate(){return this.energy>REPRO*0.7 && this.cool===0;}
+  mate(other){
+    if(this.sex===other.sex) return null;
+    this.energy-=COST*0.45; other.energy-=COST*0.45;
+    this.cool=90; other.cool=90;
+    const childGenes=this.genes.map((v,i)=>(v+other.genes[i])/2);
+    const baby=new Creature(
+      (this.x+other.x)/2+(Math.random()-0.5)*20,
+      (this.y+other.y)/2+(Math.random()-0.5)*20,
+      mutate(childGenes),
+      COST*0.9,
+      Math.max(this.gen,other.gen)+1
+    );
+    // Blend fantasy traits with mutation
+    for(const key in this.traits){
+      baby.traits[key]=(this.traits[key]+other.traits[key])/2 + (Math.random()-0.5)*0.3;
+      baby.traits[key]=Math.max(0,Math.min(1,baby.traits[key]));
+    }
+    if(baby.gen>maxGen) maxGen=baby.gen;
+    return baby;
+  }
+  draw(){
+    ctx.save();
+    ctx.translate(this.x,this.y);
+    ctx.rotate(this.angle);
+
+    const t=this.traits;
+    // Glow aura
+    if(t.glow>0.5){
+      ctx.fillStyle=`rgba(${this.r|0},${this.g|0},${this.b|0},0.15)`;
+      ctx.beginPath();
+      ctx.arc(0,0,this.bw*2.2,0,Math.PI*2);
+      ctx.fill();
+    }
+
+    // Body
+    ctx.fillStyle=`rgb(${this.r|0},${this.g|0},${this.b|0})`;
+    ctx.beginPath();
+    ctx.ellipse(0,0,this.bw,this.bh,0,0,Math.PI*2);
+    ctx.fill();
+
+    // Pattern (spots/stripes)
+    if(t.pattern>0.4){
+      ctx.fillStyle='rgba(255,255,255,0.25)';
+      for(let i=0;i<Math.floor(t.pattern*8);i++){
+        ctx.beginPath();
+        ctx.arc((Math.random()-0.5)*this.bw*1.5,(Math.random()-0.5)*this.bh*1.5,1.5,0,Math.PI*2);
+        ctx.fill();
+      }
+    }
+
+    // Limbs (tentacles/legs)
+    ctx.lineWidth=1.8;
+    for(let i=0;i<this.limbs;i++){
+      const a=(i/Math.max(1,this.limbs))*Math.PI*2 + frame*0.01;
+      const len=this.ll*(0.7+0.3*Math.sin(frame*0.05+i));
+      ctx.strokeStyle=`rgb(${this.r|0},${this.g|0},${this.b|0})`;
+      ctx.beginPath();
+      ctx.moveTo(0,0);
+      ctx.quadraticCurveTo(Math.cos(a)*len*0.5, Math.sin(a)*len*0.5, Math.cos(a)*len, Math.sin(a)*len);
+      ctx.stroke();
+    }
+
+    // Eyes
+    const eyes=Math.min(3,1+Math.floor(this.sense));
+    ctx.fillStyle='#0a0a12';
+    for(let e=0;e<eyes;e++){
+      const off=(e-(eyes-1)/2)*this.bw*0.35;
+      ctx.beginPath();
+      ctx.arc(this.bw*0.35, off, 1.6,0,Math.PI*2);
+      ctx.fill();
+      // glowing eye
+      ctx.fillStyle='rgba(255,255,100,0.7)';
+      ctx.beginPath();
+      ctx.arc(this.bw*0.35, off, 0.7,0,Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle='#0a0a12';
+    }
+
+    // Sex marker
+    ctx.fillStyle=this.sex==='M'?'#7af':'#f8a';
+    ctx.beginPath();
+    ctx.arc(-this.bw*0.5,0,2.2,0,Math.PI*2);
+    ctx.fill();
+
+    // WINGS
+    if(t.wings>0.4){
+      const w=this.bw*(0.8+t.wings);
+      ctx.strokeStyle='rgba(255,255,255,0.8)';
+      ctx.lineWidth=1.5;
+      // left wing
+      ctx.beginPath();
+      ctx.moveTo(0,-this.bh*0.3);
+      ctx.quadraticCurveTo(-w*0.5,-this.bh*1.2,-w,-this.bh*0.9);
+      ctx.quadraticCurveTo(-w*0.7,-this.bh*0.4,0,-this.bh*0.2);
+      ctx.fillStyle='rgba(200,220,255,0.4)';
+      ctx.fill();
+      ctx.stroke();
+      // right wing
+      ctx.beginPath();
+      ctx.moveTo(0,-this.bh*0.3);
+      ctx.quadraticCurveTo(w*0.5,-this.bh*1.2,w,-this.bh*0.9);
+      ctx.quadraticCurveTo(w*0.7,-this.bh*0.4,0,-this.bh*0.2);
+      ctx.fillStyle='rgba(200,220,255,0.4)';
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // HORNS
+    if(t.horns>0.3){
+      const h=Math.floor(t.horns*4);
+      ctx.fillStyle='#fdd';
+      for(let i=0;i<h;i++){
+        const hx=(-this.bw*0.3)+(i/(h-1))*this.bw*0.6;
+        ctx.beginPath();
+        ctx.moveTo(hx, -this.bh*0.3);
+        ctx.lineTo(hx-3, -this.bh*0.3-this.bh*0.7);
+        ctx.lineTo(hx+3, -this.bh*0.3-this.bh*0.7);
+        ctx.lineTo(hx, -this.bh*0.3);
+        ctx.fill();
+      }
+    }
+
+    // TAILS
+    if(t.tails>0.3){
+      const n=Math.floor(t.tails*3);
+      ctx.strokeStyle=`rgb(${this.r|0},${this.g|0},${this.b|0})`;
+      ctx.lineWidth=1.5;
+      for(let i=0;i<n;i++){
+        const ta=(i/(n-1))*Math.PI*0.8 - Math.PI*0.4;
+        ctx.beginPath();
+        ctx.moveTo(-this.bw*0.5,0);
+        ctx.quadraticCurveTo(
+          -this.bw*0.5-Math.cos(ta)*this.bw*1.5,
+          Math.sin(ta)*this.bw*1.2,
+          -this.bw*0.5-Math.cos(ta)*this.bw*2.5,
+          Math.sin(ta)*this.bw*2
+        );
+        ctx.stroke();
+      }
+    }
+
+    // SPIKES
+    if(t.spikes>0.3){
+      ctx.fillStyle='rgba(255,255,255,0.7)';
+      const n=Math.floor(t.spikes*6);
+      for(let i=0;i<n;i++){
+        const sa=(i/n)*Math.PI*2;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(sa)*this.bw*0.8, Math.sin(sa)*this.bh*0.8);
+        ctx.lineTo(Math.cos(sa)*this.bw*1.3, Math.sin(sa)*this.bh*1.3);
+        ctx.lineTo(Math.cos(sa+0.15)*this.bw*0.8, Math.sin(sa+0.15)*this.bh*0.8);
+        ctx.fill();
+      }
+    }
+
+    ctx.restore();
+  }
+}
+
+// ---------- TERRAIN ----------
+function terrainHeight(x){
+  if(terrain.length<2) return H*0.75;
+  const idx=(x/W)*TERRAIN_POINTS;
+  const i=Math.floor(idx);
+  const t=(idx-i);
+  const a=terrain[Math.max(0,Math.min(TERRAIN_POINTS,i))];
+  const b=terrain[Math.max(0,Math.min(TERRAIN_POINTS,i+1))];
+  return a.y+(b.y-a.y)*t;
+}
+
+// ---------- ENVIRONMENT ----------
+function reset(){
+  creatures=[]; foods=[]; maxGen=0; frame=0; environment='space';
+  planetY=-300; planetSize=0;
+  buildTerrain();
+  for(let i=0;i<START;i++) creatures.push(new Creature());
+}
+function spawnFood(){
+  for(let i=0;i<FOOD_RATE;i++){
+    if(foods
